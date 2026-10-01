@@ -79,7 +79,7 @@ async def find_brother_printer(hass, model_name: str, timeout: int = 10) -> str 
 
 
 class BrotherScannerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for Brother DCP-1610W."""
+    """Config flow for Brother scanners (e.g. ADS-1100ADW)."""
 
     VERSION = 1
 
@@ -127,10 +127,10 @@ class BrotherScannerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self._show_confirm_form(step_id="user")
 
     async def async_step_zeroconf(self, discovery_info):
-        """Handle zeroconf discovery of Brother DCP-1610W."""
+        """Handle zeroconf discovery of a Brother scanner."""
         model = discovery_info.properties.get("ty", "")
 
-        if MODEL not in model:
+        if MODEL.lower() not in model.lower():
             return self.async_abort(reason="not_supported")
 
         # Extract first valid IP (IPv4 or IPv6)

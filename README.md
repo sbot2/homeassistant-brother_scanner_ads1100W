@@ -1,6 +1,8 @@
-﻿# Brother DCP-1610W Scanner Integration
+﻿# Brother ADS-1100ADW Scanner Integration
 
-Custom Home Assistant integration to interface with the Brother DCP-1610W.
+Custom Home Assistant integration to interface with the Brother ADS-1100ADW
+via the WSD (Web Services for Devices) scan protocol. Supports multi-page
+scanning from the automatic document feeder (ADF).
 
 ## Installation (via HACS)
 
@@ -10,7 +12,7 @@ Custom Home Assistant integration to interface with the Brother DCP-1610W.
    with category **Integration**.
 3. Install the integration.
 4. Restart Home Assistant.
-5. Add the integration via the Home Assistant UI (search for **Brother DCP-1610W**).
+5. Add the integration via the Home Assistant UI (search for **Brother ADS-1100ADW**).
 
 ## Configuration
 

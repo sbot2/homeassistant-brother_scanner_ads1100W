@@ -72,36 +72,43 @@ async def snapshot_service(hass, call):
 
     async with lock:
         try:
-            jpeg_bytes = await scan_jpeg(ip)
+            images = await scan_jpeg(ip)
 
-            if not filename:
-                now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                filename = f"{SCANS_DIR}/{ip}_{now}.jpg"
+            # Save each scanned page
+            saved_paths = []
+            for idx, jpeg_bytes in enumerate(images):
+                page_suffix = f"p{idx + 1}" if len(images) > 1 else ""
+                if filename:
+                    page_filename = filename
+                else:
+                    now = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                    page_filename = f"{SCANS_DIR}/{ip}_{now}{page_suffix}.jpg"
 
-            # If filename is not absolute, save inside HA www
-            if not os.path.isabs(filename):
-                filename = hass.config.path("www", filename)
+                # If filename is not absolute, save inside HA www
+                if not os.path.isabs(page_filename):
+                    page_filename = hass.config.path("www", page_filename)
 
-            dir_path = os.path.dirname(filename)
-            os.makedirs(dir_path, exist_ok=True)
+                dir_path = os.path.dirname(page_filename)
+                os.makedirs(dir_path, exist_ok=True)
 
-            def write_file():
-                with open(filename, "wb") as f:
-                    f.write(jpeg_bytes)
+                def write_file():
+                    with open(page_filename, "wb") as f:
+                        f.write(jpeg_bytes)
 
-            # Save file in executor to avoid blocking event loop
-            await hass.async_add_executor_job(write_file)
+                # Save file in executor to avoid blocking event loop
+                await hass.async_add_executor_job(write_file)
+                saved_paths.append(page_filename)
+                _LOGGER.info("Snapshot saved: %s", page_filename)
 
-            _LOGGER.info("Snapshot saved: %s", filename)
-
-            # Save to HA storage for persistence
+            # Save to HA storage for persistence (first/last page for camera)
             store = storage.Store(
                 hass, STORAGE_VERSION, STORAGE_KEY_TEMPLATE.format(entry_id=entry_id)
             )
-            await store.async_save({"last_snapshot": filename})
+            await store.async_save({"last_snapshot": saved_paths[-1]})
 
             hass.bus.async_fire(
-                f"{DOMAIN}_snapshot_saved", {"ip": ip, "filename": filename}
+                f"{DOMAIN}_snapshot_saved",
+                {"ip": ip, "filename": saved_paths[-1], "pages": saved_paths},
             )
 
         except OSError as e:

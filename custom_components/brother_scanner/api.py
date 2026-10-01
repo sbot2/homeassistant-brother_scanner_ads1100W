@@ -4,7 +4,7 @@ import re
 
 
 # --- SOAP XML templates ---
-GET_SCANNER_STATUS_XML = """<?xml version="1.0" encoding="utf-8"?>
+GET_SCANNER_ELEMENTS_XML = """<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
                xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
                xmlns:sca="http://schemas.microsoft.com/windows/2006/08/wdp/scan">
@@ -27,8 +27,8 @@ GET_SCANNER_STATUS_XML = """<?xml version="1.0" encoding="utf-8"?>
     </sca:GetScannerElementsRequest>
   </soap:Body>
 </soap:Envelope>
-"""
 
+"""
 CREATE_SCAN_JOB_XML = """<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
                xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
@@ -53,7 +53,23 @@ CREATE_SCAN_JOB_XML = """<?xml version="1.0" encoding="utf-8"?>
           <sca:JobInformation>Scanning in auto mode..</sca:JobInformation>
         </sca:JobDescription>
         <sca:DocumentParameters>
-          <sca:Format sca:MustHonor="true">exif</sca:Format>
+          <sca:Format sca:MustHonor="true">{format}</sca:Format>
+          <sca:InputSource sca:MustHonor="true">{input_source}</sca:InputSource>
+          <sca:ContentType>{content_type}</sca:ContentType>
+          <sca:ColorMode>{color_mode}</sca:ColorMode>
+          <sca:Documents sca:MustHonor="true">
+            <sca:DocumentDescription>
+              <sca:DocumentName>ADF Scan</sca:DocumentName>
+              <sca:MediaSize sca:MustHonor="true">
+                <sca:Width>{page_width}</sca:Width>
+                <sca:Height>{page_height}</sca:Height>
+              </sca:MediaSize>
+            </sca:DocumentDescription>
+          </sca:Documents>
+          <sca:DocumentHandling>
+            <sca:Separators sca:MustHonor="true">None</sca:Separators>
+            <sca:ReverseOrder>false</sca:ReverseOrder>
+          </sca:DocumentHandling>
         </sca:DocumentParameters>
       </sca:ScanTicket>
     </sca:CreateScanJobRequest>
@@ -119,12 +135,15 @@ def extract_jpeg_from_mtom(response_bytes: bytes) -> bytes:
 
 
 # --- Main API function ---
-async def scan_jpeg(ip: str) -> bytes:
-    # return b"\xff\xd8\xff\xe0" + b"DUMMYJPEGDATA" + b"\xff\xd9"
+async def scan_jpeg(ip: str, max_pages: int = 10) -> list[bytes]:
+    """Scan one or more pages (ADF) from a Brother scanner.
+
+    Returns a list of JPEG bytes, one per scanned page.
+    """
     url = f"http://{ip}/WebServices/ScannerService"
     async with aiohttp.ClientSession() as session:
         # 1. Ensure idle
-        state_xml = GET_SCANNER_STATUS_XML.format(
+        state_xml = GET_SCANNER_ELEMENTS_XML.format(
             url=url, msgid=make_uuid(), fromid=make_uuid()
         )
         resp_bytes = await async_soap_request(session, url, state_xml)
@@ -133,8 +152,26 @@ async def scan_jpeg(ip: str) -> bytes:
         if state.lower() != "idle":
             raise Exception(f"Scanner not idle (state={state})")
 
-        # 2. Create scan job
-        xml = CREATE_SCAN_JOB_XML.format(url=url, msgid=make_uuid())
+        # 2. Create scan job (ADF multi-page)
+        from .const import (
+            DEFAULT_FORMAT,
+            DEFAULT_INPUT_SOURCE,
+            DEFAULT_COLOR_MODE,
+            DEFAULT_CONTENT_TYPE,
+            DEFAULT_PAGE_WIDTH,
+            DEFAULT_PAGE_HEIGHT,
+        )
+
+        xml = CREATE_SCAN_JOB_XML.format(
+            url=url,
+            msgid=make_uuid(),
+            format=DEFAULT_FORMAT,
+            input_source=DEFAULT_INPUT_SOURCE,
+            content_type=DEFAULT_CONTENT_TYPE,
+            color_mode=DEFAULT_COLOR_MODE,
+            page_width=DEFAULT_PAGE_WIDTH,
+            page_height=DEFAULT_PAGE_HEIGHT,
+        )
         resp_bytes = await async_soap_request(session, url, xml)
         jid = re.search(rb"<wscn:JobId>(\d+)</wscn:JobId>", resp_bytes)
         jtok = re.search(rb"<wscn:JobToken>(.*?)</wscn:JobToken>", resp_bytes)
@@ -142,9 +179,29 @@ async def scan_jpeg(ip: str) -> bytes:
             raise Exception("Failed to create scan job")
         jobid, jobtoken = jid.group(1).decode(), jtok.group(1).decode()
 
-        # 3. Retrieve image
-        xml = RETRIEVE_IMAGE_XML.format(
-            url=url, msgid=make_uuid(), jobid=jobid, jobtoken=jobtoken
-        )
-        resp_bytes = await async_soap_request(session, url, xml)
-        return extract_jpeg_from_mtom(resp_bytes)
+        # 3. Retrieve image(s) as long as the job reports more data
+        images: list[bytes] = []
+        for _ in range(max_pages):
+            xml = RETRIEVE_IMAGE_XML.format(
+                url=url, msgid=make_uuid(), jobid=jobid, jobtoken=jobtoken
+            )
+            resp_bytes = await async_soap_request(session, url, xml)
+            images.append(extract_jpeg_from_mtom(resp_bytes))
+
+            # Check job state for "more data available"
+            state_m = re.search(rb"<wscn:JobState>(.*?)</wscn:JobState>", resp_bytes)
+            reasons_m = re.findall(
+                rb"<wscn:JobStateReason>(.*?)</wscn:JobStateReason>", resp_bytes
+            )
+            job_state = state_m.group(1).decode() if state_m else ""
+            reasons = [r.decode().strip() for r in reasons_m]
+            # "Completed" with no "MoreDataAvailable" means all pages are done
+            if (
+                "Completed" in job_state
+                and "MoreDataAvailable" not in reasons
+            ):
+                break
+            if job_state in ("Canceled", "Aborted"):
+                raise Exception(f"Scan job ended with state {job_state}")
+
+        return images

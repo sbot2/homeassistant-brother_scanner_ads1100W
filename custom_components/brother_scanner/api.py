@@ -155,11 +155,23 @@ def make_uuid() -> str:
 
 
 async def async_soap_request(
-    session: aiohttp.ClientSession, url: str, xml: str
+    session: aiohttp.ClientSession, url: str, xml: str, step: str = "SOAP"
 ) -> bytes:
     headers = {"Content-Type": "application/soap+xml"}
     async with session.post(url, data=xml.encode("utf-8"), headers=headers) as resp:
-        resp.raise_for_status()
+        body = await resp.text(errors="ignore")
+        if resp.status >= 400:
+            snippet = body[:500]
+            raise aiohttp.ClientResponseError(
+                resp.request_info,
+                resp.history,
+                status=resp.status,
+                message=(
+                    f"{step} returned HTTP {resp.status}: {resp.reason} | "
+                    f"body: {snippet}"
+                ),
+                headers=resp.headers,
+            )
         return await resp.read()
 
 
@@ -250,7 +262,9 @@ async def scan_jpeg(
         state_xml = GET_SCANNER_ELEMENTS_XML.format(
             url=url, msgid=make_uuid(), fromid=make_uuid()
         )
-        resp_bytes = await async_soap_request(session, url, state_xml)
+        resp_bytes = await async_soap_request(
+            session, url, state_xml, step="GetScannerElements"
+        )
         m = re.search(rb"<wscn:ScannerState>(.*?)</wscn:ScannerState>", resp_bytes)
         state = m.group(1).decode() if m else "Unknown"
         if state.lower() != "idle":
@@ -284,7 +298,9 @@ async def scan_jpeg(
             page_width=page_width,
             page_height=page_height,
         )
-        resp_bytes = await async_soap_request(session, url, xml)
+        resp_bytes = await async_soap_request(
+            session, url, xml, step="CreateScanJob"
+        )
         jid = re.search(rb"<wscn:JobId>(\d+)</wscn:JobId>", resp_bytes)
         jtok = re.search(rb"<wscn:JobToken>(.*?)</wscn:JobToken>", resp_bytes)
         if not jid or not jtok:
@@ -297,7 +313,9 @@ async def scan_jpeg(
             xml = RETRIEVE_IMAGE_XML.format(
                 url=url, msgid=make_uuid(), jobid=jobid, jobtoken=jobtoken
             )
-            resp_bytes = await async_soap_request(session, url, xml)
+            resp_bytes = await async_soap_request(
+                session, url, xml, step=f"RetrieveImage page {len(images) + 1}"
+            )
             images.append(extract_jpeg_from_mtom(resp_bytes))
 
             # Check job state for "more data available"

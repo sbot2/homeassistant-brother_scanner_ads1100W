@@ -183,8 +183,13 @@ async def snapshot_service(hass, call):
             _LOGGER.error("Failed to save snapshot for %s: %s", ip, e)
             raise HomeAssistantError(f"Failed to save snapshot: {e}")
         except Exception as e:
-            _LOGGER.error("Unexpected error during snapshot for %s: %s", ip, e)
-            raise HomeAssistantError(f"Unexpected error: {e}")
+            _LOGGER.error(
+                "Unexpected error during snapshot for %s: %s",
+                ip,
+                e,
+                exc_info=True,
+            )
+            raise HomeAssistantError(f"Unexpected error: {e}") from e
 
 
 async def _save_scan(hass, ip, entry_id, images, filename, options) -> list:

@@ -1,6 +1,19 @@
 import uuid
+import asyncio
 import aiohttp
 import re
+
+from .const import (
+    DEFAULT_FORMAT,
+    DEFAULT_INPUT_SOURCE,
+    DEFAULT_COLOR_MODE,
+    DEFAULT_CONTENT_TYPE,
+    DEFAULT_PAGE_WIDTH,
+    DEFAULT_PAGE_HEIGHT,
+    DEFAULT_RESOLUTION,
+    DEFAULT_DUPLEX,
+    MAX_PAGES,
+)
 
 
 # --- SOAP XML templates ---
@@ -23,6 +36,8 @@ GET_SCANNER_ELEMENTS_XML = """<?xml version="1.0" encoding="utf-8"?>
     <sca:GetScannerElementsRequest>
       <sca:RequestedElements>
         <sca:Name>sca:ScannerStatus</sca:Name>
+        <sca:Name>sca:ScannerElements</sca:Name>
+        <sca:Name>sca:AutoDocumentFeederStatus</sca:Name>
       </sca:RequestedElements>
     </sca:GetScannerElementsRequest>
   </soap:Body>
@@ -57,6 +72,9 @@ CREATE_SCAN_JOB_XML = """<?xml version="1.0" encoding="utf-8"?>
           <sca:InputSource sca:MustHonor="true">{input_source}</sca:InputSource>
           <sca:ContentType>{content_type}</sca:ContentType>
           <sca:ColorMode>{color_mode}</sca:ColorMode>
+          <sca:xResolution sca:MustHonor="true">{xresolution}</sca:xResolution>
+          <sca:yResolution sca:MustHonor="true">{yresolution}</sca:yResolution>
+          <sca:ScanningSide sca:MustHonor="true">{scanning_side}</sca:ScanningSide>
           <sca:Documents sca:MustHonor="true">
             <sca:DocumentDescription>
               <sca:DocumentName>ADF Scan</sca:DocumentName>
@@ -135,7 +153,60 @@ def extract_jpeg_from_mtom(response_bytes: bytes) -> bytes:
 
 
 # --- Main API function ---
-async def scan_jpeg(ip: str, max_pages: int = 10) -> list[bytes]:
+async def get_scanner_state(ip: str) -> dict:
+    """Query scanner status, ADF status and scanner elements.
+
+    Returns a dict with scanner state, state reason and ADF state.
+    """
+    url = f"http://{ip}/WebServices/ScannerService"
+    async with aiohttp.ClientSession() as session:
+        state_xml = GET_SCANNER_ELEMENTS_XML.format(
+            url=url, msgid=make_uuid(), fromid=make_uuid()
+        )
+        resp_bytes = await async_soap_request(session, url, state_xml)
+        text = resp_bytes.decode("utf-8", errors="ignore")
+        return {
+            "state": _extract(text, r"<wscn:ScannerState>(.*?)</wscn:ScannerState>"),
+            "state_reason": _extract(
+                text, r"<wscn:ScannerStateReason>(.*?)</wscn:ScannerStateReason>"
+            ),
+            "adf_state": _extract(
+                text, r"<wscn:AdfState>(.*?)</wscn:AdfState>"
+            ),
+            "raw": text,
+        }
+
+
+def _extract(text: str, pattern: str) -> str:
+    m = re.search(pattern, text)
+    return m.group(1).strip() if m else "Unknown"
+
+
+async def check_online(ip: str, timeout: float = 2.0) -> bool:
+    """Return True if the scanner responds on its WSD scan service port."""
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, 80), timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+
+async def scan_jpeg(
+    ip: str,
+    max_pages: int = MAX_PAGES,
+    color_mode: str = DEFAULT_COLOR_MODE,
+    fmt: str = DEFAULT_FORMAT,
+    input_source: str = DEFAULT_INPUT_SOURCE,
+    content_type: str = DEFAULT_CONTENT_TYPE,
+    resolution: int = DEFAULT_RESOLUTION,
+    duplex: str = DEFAULT_DUPLEX,
+    page_width: int = DEFAULT_PAGE_WIDTH,
+    page_height: int = DEFAULT_PAGE_HEIGHT,
+) -> list[bytes]:
     """Scan one or more pages (ADF) from a Brother scanner.
 
     Returns a list of JPEG bytes, one per scanned page.
@@ -153,24 +224,18 @@ async def scan_jpeg(ip: str, max_pages: int = 10) -> list[bytes]:
             raise Exception(f"Scanner not idle (state={state})")
 
         # 2. Create scan job (ADF multi-page)
-        from .const import (
-            DEFAULT_FORMAT,
-            DEFAULT_INPUT_SOURCE,
-            DEFAULT_COLOR_MODE,
-            DEFAULT_CONTENT_TYPE,
-            DEFAULT_PAGE_WIDTH,
-            DEFAULT_PAGE_HEIGHT,
-        )
-
         xml = CREATE_SCAN_JOB_XML.format(
             url=url,
             msgid=make_uuid(),
-            format=DEFAULT_FORMAT,
-            input_source=DEFAULT_INPUT_SOURCE,
-            content_type=DEFAULT_CONTENT_TYPE,
-            color_mode=DEFAULT_COLOR_MODE,
-            page_width=DEFAULT_PAGE_WIDTH,
-            page_height=DEFAULT_PAGE_HEIGHT,
+            format=fmt,
+            input_source=input_source,
+            content_type=content_type,
+            color_mode=color_mode,
+            xresolution=resolution,
+            yresolution=resolution,
+            scanning_side=duplex,
+            page_width=page_width,
+            page_height=page_height,
         )
         resp_bytes = await async_soap_request(session, url, xml)
         jid = re.search(rb"<wscn:JobId>(\d+)</wscn:JobId>", resp_bytes)

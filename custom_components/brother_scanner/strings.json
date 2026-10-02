@@ -10,5 +10,20 @@
         "description": "Enter the IP address or hostname of your {manufacturer} {model} printer."
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Scanner Options",
+        "description": "Configure the scan settings used when a snapshot is taken.",
+        "data": {
+          "color_mode": "Color mode",
+          "resolution": "Resolution (dpi)",
+          "duplex": "Duplex mode",
+          "output_format": "Output format",
+          "ocr": "Run OCR (requires tesseract)"
+        }
+      }
+    }
   }
 }

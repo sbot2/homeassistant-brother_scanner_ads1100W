@@ -16,3 +16,51 @@
       example: "/config/www/scans/192.168.0.42_20250820_183714.jpg"
       selector:
         text:
+    color_mode:
+      name: Color Mode
+      description: Color mode for the scan (RGB24, Gray8 or BlackAndWhite1). Overrides the device default.
+      required: false
+      example: "RGB24"
+      selector:
+        select:
+          options:
+            - RGB24
+            - Gray8
+            - BlackAndWhite1
+    resolution:
+      name: Resolution
+      description: Scan resolution in DPI (100, 200, 300, 400 or 600). Overrides the device default.
+      required: false
+      example: 300
+      selector:
+        number:
+          min: 100
+          max: 600
+          step: 100
+          unit_of_measurement: dpi
+    duplex:
+      name: Duplex
+      description: Duplex mode (None or Duplex). Overrides the device default.
+      required: false
+      example: "None"
+      selector:
+        select:
+          options:
+            - None
+            - Duplex
+    output_format:
+      name: Output Format
+      description: Save the scan as jpeg (one file per page) or as a single pdf. Overrides the device default.
+      required: false
+      example: "pdf"
+      selector:
+        select:
+          options:
+            - jpeg
+            - pdf
+    ocr:
+      name: OCR
+      description: Run OCR on the scanned pages and save .txt files next to the images. Requires tesseract to be installed.
+      required: false
+      selector:
+        boolean:

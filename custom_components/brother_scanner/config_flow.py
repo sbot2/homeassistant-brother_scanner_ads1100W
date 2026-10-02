@@ -7,7 +7,25 @@ import logging
 from homeassistant import config_entries
 from homeassistant.components import zeroconf as ha_zeroconf
 from zeroconf import ServiceBrowser
-from .const import DOMAIN, MODEL, MANUFACTURER
+from .const import (
+    DOMAIN,
+    MODEL,
+    MANUFACTURER,
+    CONF_COLOR_MODE,
+    CONF_RESOLUTION,
+    CONF_DUPLEX,
+    CONF_OUTPUT_FORMAT,
+    CONF_OCR,
+    COLOR_MODES,
+    RESOLUTIONS,
+    OUTPUT_FORMATS,
+    DUPLEX_VALUES,
+    DEFAULT_COLOR_MODE,
+    DEFAULT_RESOLUTION,
+    DEFAULT_DUPLEX,
+    DEFAULT_OUTPUT_FORMAT,
+    DEFAULT_OCR,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -168,3 +186,48 @@ class BrotherScannerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "model": MODEL,
             },
         )
+
+    @staticmethod
+    async def async_get_options_flow(config_entry):
+        return BrotherScannerOptionsFlow(config_entry)
+
+
+class BrotherScannerOptionsFlow(config_entries.OptionsFlow):
+    """Options flow to configure scan settings per device."""
+
+    def __init__(self, config_entry):
+        self._config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        """Manage the scanner's scan options."""
+        if user_input is not None:
+            new_options = {
+                **self._config_entry.options,
+                CONF_COLOR_MODE: user_input[CONF_COLOR_MODE],
+                CONF_RESOLUTION: user_input[CONF_RESOLUTION],
+                CONF_DUPLEX: user_input[CONF_DUPLEX],
+                CONF_OUTPUT_FORMAT: user_input[CONF_OUTPUT_FORMAT],
+                CONF_OCR: user_input[CONF_OCR],
+            }
+            return self.async_create_entry(title="", data=new_options)
+
+        opts = self._config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_COLOR_MODE, default=opts.get(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
+                ): vol.In(COLOR_MODES),
+                vol.Required(
+                    CONF_RESOLUTION, default=int(opts.get(CONF_RESOLUTION, DEFAULT_RESOLUTION))
+                ): vol.In(RESOLUTIONS),
+                vol.Required(
+                    CONF_DUPLEX, default=opts.get(CONF_DUPLEX, DEFAULT_DUPLEX)
+                ): vol.In(DUPLEX_VALUES),
+                vol.Required(
+                    CONF_OUTPUT_FORMAT,
+                    default=opts.get(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
+                ): vol.In(OUTPUT_FORMATS),
+                vol.Required(CONF_OCR, default=bool(opts.get(CONF_OCR, DEFAULT_OCR))): bool,
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

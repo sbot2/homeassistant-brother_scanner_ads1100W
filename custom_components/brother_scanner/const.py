@@ -1,10 +1,11 @@
+from datetime import timedelta
+
 DOMAIN = "brother_scanner"
 MANUFACTURER = "Brother"
 MODEL = "ADS-1100ADW"
 STORAGE_VERSION = 1
 STORAGE_KEY_TEMPLATE = f"{DOMAIN}_{{entry_id}}"
 SCANS_DIR = "scans"
-
 # WSD scan settings for the ADS-1100ADW (ADF sheet-fed document scanner)
 DEFAULT_FORMAT = "exif"
 DEFAULT_INPUT_SOURCE = "ADF"
@@ -40,5 +41,5 @@ TESSERACT_CMD = "tesseract"
 # Max number of pages to retrieve in a single scan
 MAX_PAGES = 10
 
-# Update interval for sensor/online polling, in seconds
-SCAN_INTERVAL = 60
+# Update interval for sensor/online polling
+SCAN_INTERVAL = timedelta(seconds=60)

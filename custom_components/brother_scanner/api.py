@@ -213,13 +213,14 @@ async def get_scanner_state(ip: str) -> dict:
             )
             resp_bytes = await async_soap_request(session, url, state_xml)
         text = resp_bytes.decode("utf-8", errors="ignore")
+        _LOGGER.debug("Scanner state response for %s:\n%s", ip, text)
         return {
             "state": _extract(text, r"<wscn:ScannerState>(.*?)</wscn:ScannerState>"),
             "state_reason": _extract(
                 text, r"<wscn:ScannerStateReason>(.*?)</wscn:ScannerStateReason>"
             ),
             "adf_state": _extract(
-                text, r"<wscn:AdfState>(.*?)</wscn:AdfState>"
+                text, r"<wscn:(?:AdfState|AutoDocumentFeederState)>(.*?)</wscn:(?:AdfState|AutoDocumentFeederState)>"
             ),
             "raw": text,
         }

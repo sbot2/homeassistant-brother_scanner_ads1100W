@@ -1,5 +1,6 @@
 import uuid
 import asyncio
+import logging
 import aiohttp
 import re
 
@@ -14,6 +15,8 @@ from .const import (
     DEFAULT_DUPLEX,
     MAX_PAGES,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # --- SOAP XML templates ---
@@ -313,9 +316,23 @@ async def scan_jpeg(
             xml = RETRIEVE_IMAGE_XML.format(
                 url=url, msgid=make_uuid(), jobid=jobid, jobtoken=jobtoken
             )
-            resp_bytes = await async_soap_request(
-                session, url, xml, step=f"RetrieveImage page {len(images) + 1}"
-            )
+            try:
+                resp_bytes = await async_soap_request(
+                    session, url, xml, step=f"RetrieveImage page {len(images) + 1}"
+                )
+            except aiohttp.ClientResponseError as e:
+                # If we already retrieved at least one page, a failure on the
+                # next RetrieveImage simply means there are no more pages (the
+                # scanner signals "end of document" with a fault instead of a
+                # clean response). Treat it as a normal completion.
+                if images:
+                    _LOGGER.debug(
+                        "Scanner reported end of document after %d page(s): %s",
+                        len(images),
+                        e,
+                    )
+                    break
+                raise
             images.append(extract_jpeg_from_mtom(resp_bytes))
 
             # Check job state for "more data available"

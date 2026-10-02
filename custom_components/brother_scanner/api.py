@@ -44,6 +44,34 @@ GET_SCANNER_ELEMENTS_XML = """<?xml version="1.0" encoding="utf-8"?>
 </soap:Envelope>
 
 """
+
+# Minimal variant requesting only ScannerStatus, used as a fallback for devices
+# that reject the extended request.
+SCANNER_STATUS_ONLY_XML = """<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+               xmlns:sca="http://schemas.microsoft.com/windows/2006/08/wdp/scan">
+  <soap:Header>
+    <wsa:To>{url}</wsa:To>
+    <wsa:Action>http://schemas.microsoft.com/windows/2006/08/wdp/scan/GetScannerElements</wsa:Action>
+    <wsa:MessageID>urn:uuid:{msgid}</wsa:MessageID>
+    <wsa:ReplyTo>
+      <wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+    </wsa:ReplyTo>
+    <wsa:From>
+      <wsa:Address>urn:uuid:{fromid}</wsa:Address>
+    </wsa:From>
+  </soap:Header>
+  <soap:Body>
+    <sca:GetScannerElementsRequest>
+      <sca:RequestedElements>
+        <sca:Name>sca:ScannerStatus</sca:Name>
+      </sca:RequestedElements>
+    </sca:GetScannerElementsRequest>
+  </soap:Body>
+</soap:Envelope>
+
+"""
 CREATE_SCAN_JOB_XML = """<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
                xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
@@ -72,9 +100,7 @@ CREATE_SCAN_JOB_XML = """<?xml version="1.0" encoding="utf-8"?>
           <sca:InputSource sca:MustHonor="true">{input_source}</sca:InputSource>
           <sca:ContentType>{content_type}</sca:ContentType>
           <sca:ColorMode>{color_mode}</sca:ColorMode>
-          <sca:xResolution sca:MustHonor="true">{xresolution}</sca:xResolution>
-          <sca:yResolution sca:MustHonor="true">{yresolution}</sca:yResolution>
-          <sca:ScanningSide sca:MustHonor="true">{scanning_side}</sca:ScanningSide>
+          {resolution_extra}{scanning_side_extra}
           <sca:Documents sca:MustHonor="true">
             <sca:DocumentDescription>
               <sca:DocumentName>ADF Scan</sca:DocumentName>
@@ -160,10 +186,17 @@ async def get_scanner_state(ip: str) -> dict:
     """
     url = f"http://{ip}/WebServices/ScannerService"
     async with aiohttp.ClientSession() as session:
-        state_xml = GET_SCANNER_ELEMENTS_XML.format(
-            url=url, msgid=make_uuid(), fromid=make_uuid()
-        )
-        resp_bytes = await async_soap_request(session, url, state_xml)
+        try:
+            state_xml = GET_SCANNER_ELEMENTS_XML.format(
+                url=url, msgid=make_uuid(), fromid=make_uuid()
+            )
+            resp_bytes = await async_soap_request(session, url, state_xml)
+        except aiohttp.ClientResponseError:
+            # Fall back to the minimal request some printers only accept.
+            state_xml = SCANNER_STATUS_ONLY_XML.format(
+                url=url, msgid=make_uuid(), fromid=make_uuid()
+            )
+            resp_bytes = await async_soap_request(session, url, state_xml)
         text = resp_bytes.decode("utf-8", errors="ignore")
         return {
             "state": _extract(text, r"<wscn:ScannerState>(.*?)</wscn:ScannerState>"),
@@ -224,6 +257,21 @@ async def scan_jpeg(
             raise Exception(f"Scanner not idle (state={state})")
 
         # 2. Create scan job (ADF multi-page)
+        # The resolution and scanning-side fields are optional: they are only
+        # added when explicitly requested, to stay compatible with devices that
+        # reject them (which would otherwise cause a 400 on RetrieveImage).
+        resolution_extra = ""
+        if resolution != DEFAULT_RESOLUTION:
+            resolution_extra = (
+                f'\n          <sca:xResolution sca:MustHonor="true">{resolution}</sca:xResolution>'
+                f'\n          <sca:yResolution sca:MustHonor="true">{resolution}</sca:yResolution>'
+            )
+        scanning_side_extra = ""
+        if duplex.lower() == "duplex":
+            scanning_side_extra = (
+                '\n          <sca:ScanningSide sca:MustHonor="true">Duplex</sca:ScanningSide>'
+            )
+
         xml = CREATE_SCAN_JOB_XML.format(
             url=url,
             msgid=make_uuid(),
@@ -231,9 +279,8 @@ async def scan_jpeg(
             input_source=input_source,
             content_type=content_type,
             color_mode=color_mode,
-            xresolution=resolution,
-            yresolution=resolution,
-            scanning_side=duplex,
+            resolution_extra=resolution_extra,
+            scanning_side_extra=scanning_side_extra,
             page_width=page_width,
             page_height=page_height,
         )

@@ -27,6 +27,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     devices = [
         BrotherScannerStateSensor(coordinator, entry),
+        BrotherScannerStateReasonSensor(coordinator, entry),
         BrotherScannerAdfSensor(coordinator, entry),
         BrotherScannerOnlineSensor(coordinator, entry),
         BrotherScannerPagesSensor(coordinator, entry),
@@ -82,7 +83,20 @@ class BrotherScannerStateSensor(BaseBrotherEntity, SensorEntity):
         return self.coordinator.data.get("state") if self.coordinator.data else STATE_UNKNOWN
 
 
-class BrotherScannerAdfSensor(BaseBrotherEntity, SensorEntity):
+class BrotherScannerStateReasonSensor(BaseBrotherEntity, SensorEntity):
+    """Detailed scanner state reason (e.g. processing, cover open)."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{self._entry_id}_scanner_state_reason"
+        self._attr_name = "Scanner State Reason"
+        self._attr_icon = "mdi:information-outline"
+
+    @property
+    def native_value(self):
+        if not self.coordinator.data:
+            return STATE_UNKNOWN
+        return self.coordinator.data.get("state_reason")
     """Automatic document feeder state (paper present, feeder open, ...)."""
 
     def __init__(self, coordinator, entry):

@@ -64,3 +64,55 @@
       required: false
       selector:
         boolean:
+    brightness:
+      name: Brightness
+      description: Image brightness adjustment (-50 to 50). Overrides the device default.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: -50
+          max: 50
+          step: 1
+          mode: slider
+    contrast:
+      name: Contrast
+      description: Image contrast adjustment (-50 to 50). Overrides the device default.
+      required: false
+      default: 0
+      selector:
+        number:
+          min: -50
+          max: 50
+          step: 1
+          mode: slider
+    deskew:
+      name: Deskew
+      description: Automatically straighten skewed pages. Overrides the device default.
+      required: false
+      selector:
+        boolean:
+    rotation:
+      name: Rotation
+      description: Rotate the scanned page (None, Rotate90, Rotate180 or Rotate270). Overrides the device default.
+      required: false
+      example: "Rotate90"
+      selector:
+        select:
+          options:
+            - None
+            - Rotate90
+            - Rotate180
+            - Rotate270
+
+cancel_scan:
+  name: Cancel Scan
+  description: Cancel the currently running scan job on the scanner.
+  fields:
+    ip:
+      name: Device IP
+      description: The registered IP address of the scanner.
+      required: true
+      example: "192.168.0.42 or the host name"
+      selector:
+        text:

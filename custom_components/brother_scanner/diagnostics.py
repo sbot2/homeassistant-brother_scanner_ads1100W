@@ -22,3 +22,12 @@ async def save_diagnostics(hass, entry_id: str, data: dict) -> None:
     existing = await store.async_load() or {}
     merged = {**existing, **data}
     await store.async_save(merged)
+
+
+async def save_last_snapshot(hass, entry_id: str, path: str) -> None:
+    """Persist the last snapshot path without overwriting diagnostics."""
+    store = storage.Store(
+        hass, STORAGE_VERSION, STORAGE_KEY_TEMPLATE.format(entry_id=entry_id)
+    )
+    existing = await store.async_load() or {}
+    await store.async_save({**existing, "last_snapshot": path})

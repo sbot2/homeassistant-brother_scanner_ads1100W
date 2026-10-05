@@ -13,6 +13,10 @@ from .const import (
     DEFAULT_PAGE_HEIGHT,
     DEFAULT_RESOLUTION,
     DEFAULT_DUPLEX,
+    DEFAULT_BRIGHTNESS,
+    DEFAULT_CONTRAST,
+    DEFAULT_DESKEW,
+    DEFAULT_ROTATION,
     MAX_PAGES,
 )
 
@@ -103,7 +107,7 @@ CREATE_SCAN_JOB_XML = """<?xml version="1.0" encoding="utf-8"?>
           <sca:InputSource sca:MustHonor="true">{input_source}</sca:InputSource>
           <sca:ContentType>{content_type}</sca:ContentType>
           <sca:ColorMode>{color_mode}</sca:ColorMode>
-          {resolution_extra}{scanning_side_extra}
+          {resolution_extra}{scanning_side_extra}{adjustment_extra}
           <sca:Documents sca:MustHonor="true">
             <sca:DocumentDescription>
               <sca:DocumentName>ADF Scan</sca:DocumentName>
@@ -147,6 +151,30 @@ RETRIEVE_IMAGE_XML = """<?xml version="1.0" encoding="utf-8"?>
         <sca:DocumentName>Python Scan</sca:DocumentName>
       </sca:DocumentDescription>
     </sca:RetrieveImageRequest>
+  </soap:Body>
+</soap:Envelope>
+"""
+
+CANCEL_JOB_XML = """<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+               xmlns:sca="http://schemas.microsoft.com/windows/2006/08/wdp/scan">
+  <soap:Header>
+    <wsa:To>{url}</wsa:To>
+    <wsa:Action>http://schemas.microsoft.com/windows/2006/08/wdp/scan/CancelJob</wsa:Action>
+    <wsa:MessageID>urn:uuid:{msgid}</wsa:MessageID>
+    <wsa:ReplyTo>
+      <wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+    </wsa:ReplyTo>
+    <wsa:From>
+      <wsa:Address>urn:uuid:python-client</wsa:Address>
+    </wsa:From>
+  </soap:Header>
+  <soap:Body>
+    <sca:CancelJobRequest>
+      <sca:JobId>{jobid}</sca:JobId>
+      <sca:JobToken>{jobtoken}</sca:JobToken>
+    </sca:CancelJobRequest>
   </soap:Body>
 </soap:Envelope>
 """
@@ -255,10 +283,18 @@ async def scan_jpeg(
     duplex: str = DEFAULT_DUPLEX,
     page_width: int = DEFAULT_PAGE_WIDTH,
     page_height: int = DEFAULT_PAGE_HEIGHT,
+    brightness: int = DEFAULT_BRIGHTNESS,
+    contrast: int = DEFAULT_CONTRAST,
+    deskew: bool = DEFAULT_DESKEW,
+    rotation: str = DEFAULT_ROTATION,
+    on_job_start=None,
 ) -> list[bytes]:
     """Scan one or more pages (ADF) from a Brother scanner.
 
     Returns a list of JPEG bytes, one per scanned page.
+
+    ``on_job_start(jobid, jobtoken)`` is called (if provided) as soon as the
+    scan job has been created, allowing callers to later cancel it.
     """
     url = f"http://{ip}/WebServices/ScannerService"
     async with aiohttp.ClientSession() as session:
@@ -275,9 +311,10 @@ async def scan_jpeg(
             raise Exception(f"Scanner not idle (state={state})")
 
         # 2. Create scan job (ADF multi-page)
-        # The resolution and scanning-side fields are optional: they are only
-        # added when explicitly requested, to stay compatible with devices that
-        # reject them (which would otherwise cause a 400 on RetrieveImage).
+        # The resolution, scanning-side and image-adjustment fields are optional:
+        # they are only added when they differ from the defaults, to stay
+        # compatible with devices that reject them (which would otherwise cause
+        # a 400 on RetrieveImage).
         resolution_extra = ""
         if resolution != DEFAULT_RESOLUTION:
             resolution_extra = (
@@ -290,6 +327,22 @@ async def scan_jpeg(
                 '\n          <sca:ScanningSide sca:MustHonor="true">Duplex</sca:ScanningSide>'
             )
 
+        adjustment_extra = ""
+        if brightness != DEFAULT_BRIGHTNESS:
+            adjustment_extra += (
+                f'\n          <sca:Brightness sca:MustHonor="true">{brightness}</sca:Brightness>'
+            )
+        if contrast != DEFAULT_CONTRAST:
+            adjustment_extra += (
+                f'\n          <sca:Contrast sca:MustHonor="true">{contrast}</sca:Contrast>'
+            )
+        if deskew:
+            adjustment_extra += '\n          <sca:Deskew sca:MustHonor="true">true</sca:Deskew>'
+        if rotation.lower() not in ("none", ""):
+            adjustment_extra += (
+                f'\n          <sca:Rotation sca:MustHonor="true">{rotation}</sca:Rotation>'
+            )
+
         xml = CREATE_SCAN_JOB_XML.format(
             url=url,
             msgid=make_uuid(),
@@ -299,6 +352,7 @@ async def scan_jpeg(
             color_mode=color_mode,
             resolution_extra=resolution_extra,
             scanning_side_extra=scanning_side_extra,
+            adjustment_extra=adjustment_extra,
             page_width=page_width,
             page_height=page_height,
         )
@@ -310,6 +364,9 @@ async def scan_jpeg(
         if not jid or not jtok:
             raise Exception("Failed to create scan job")
         jobid, jobtoken = jid.group(1).decode(), jtok.group(1).decode()
+
+        if on_job_start is not None:
+            on_job_start(jobid, jobtoken)
 
         # 3. Retrieve image(s) as long as the job reports more data
         images: list[bytes] = []
@@ -353,3 +410,11 @@ async def scan_jpeg(
                 raise Exception(f"Scan job ended with state {job_state}")
 
         return images
+
+
+async def cancel_scan_job(ip: str, jobid: str, jobtoken: str) -> None:
+    """Cancel an in-progress scan job on the scanner (WSD CancelJob)."""
+    url = f"http://{ip}/WebServices/ScannerService"
+    xml = CANCEL_JOB_XML.format(url=url, msgid=make_uuid(), jobid=jobid, jobtoken=jobtoken)
+    async with aiohttp.ClientSession() as session:
+        await async_soap_request(session, url, xml, step="CancelJob")

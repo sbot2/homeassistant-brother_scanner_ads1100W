@@ -16,15 +16,24 @@ from .const import (
     CONF_DUPLEX,
     CONF_OUTPUT_FORMAT,
     CONF_OCR,
+    CONF_BRIGHTNESS,
+    CONF_CONTRAST,
+    CONF_DESKEW,
+    CONF_ROTATION,
     COLOR_MODES,
     RESOLUTIONS,
     OUTPUT_FORMATS,
     DUPLEX_VALUES,
+    ROTATIONS,
     DEFAULT_COLOR_MODE,
     DEFAULT_RESOLUTION,
     DEFAULT_DUPLEX,
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_OCR,
+    DEFAULT_BRIGHTNESS,
+    DEFAULT_CONTRAST,
+    DEFAULT_DESKEW,
+    DEFAULT_ROTATION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -208,6 +217,10 @@ class BrotherScannerOptionsFlow(config_entries.OptionsFlow):
                 CONF_DUPLEX: user_input[CONF_DUPLEX],
                 CONF_OUTPUT_FORMAT: user_input[CONF_OUTPUT_FORMAT],
                 CONF_OCR: user_input[CONF_OCR],
+                CONF_BRIGHTNESS: user_input[CONF_BRIGHTNESS],
+                CONF_CONTRAST: user_input[CONF_CONTRAST],
+                CONF_DESKEW: user_input[CONF_DESKEW],
+                CONF_ROTATION: user_input[CONF_ROTATION],
             }
             return self.async_create_entry(title="", data=new_options)
 
@@ -228,6 +241,20 @@ class BrotherScannerOptionsFlow(config_entries.OptionsFlow):
                     default=opts.get(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
                 ): vol.In(OUTPUT_FORMATS),
                 vol.Required(CONF_OCR, default=bool(opts.get(CONF_OCR, DEFAULT_OCR))): bool,
+                vol.Required(
+                    CONF_BRIGHTNESS,
+                    default=int(opts.get(CONF_BRIGHTNESS, DEFAULT_BRIGHTNESS)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=-50, max=50)),
+                vol.Required(
+                    CONF_CONTRAST,
+                    default=int(opts.get(CONF_CONTRAST, DEFAULT_CONTRAST)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=-50, max=50)),
+                vol.Required(
+                    CONF_DESKEW, default=bool(opts.get(CONF_DESKEW, DEFAULT_DESKEW))
+                ): bool,
+                vol.Required(
+                    CONF_ROTATION, default=opts.get(CONF_ROTATION, DEFAULT_ROTATION)
+                ): vol.In(ROTATIONS),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

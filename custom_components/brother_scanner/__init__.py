@@ -4,27 +4,38 @@ import logging
 import datetime
 import os
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import storage
 from .const import (
     DOMAIN,
-    STORAGE_VERSION,
-    STORAGE_KEY_TEMPLATE,
     SCANS_DIR,
     CONF_COLOR_MODE,
     CONF_RESOLUTION,
     CONF_DUPLEX,
     CONF_OUTPUT_FORMAT,
     CONF_OCR,
+    CONF_BRIGHTNESS,
+    CONF_CONTRAST,
+    CONF_DESKEW,
+    CONF_ROTATION,
     TESSERACT_CMD,
     DEFAULT_COLOR_MODE,
     DEFAULT_RESOLUTION,
     DEFAULT_DUPLEX,
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_OCR,
+    DEFAULT_BRIGHTNESS,
+    DEFAULT_CONTRAST,
+    DEFAULT_DESKEW,
+    DEFAULT_ROTATION,
     MAX_PAGES,
+    SERVICE_SNAPSHOT,
+    SERVICE_CANCEL_SCAN,
 )
-from .api import scan_jpeg
-from .diagnostics import load_diagnostics, save_diagnostics
+from .api import scan_jpeg, cancel_scan_job
+from .diagnostics import (
+    load_diagnostics,
+    save_diagnostics,
+    save_last_snapshot,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +49,7 @@ async def async_setup_entry(hass, entry):
     hass.data.setdefault(DOMAIN, {})[entry_id] = {
         "ip": ip,
         "lock": asyncio.Lock(),
+        "current_job": None,
         "entities": [],
         "entry_id": entry_id,
         "options": _entry_options(entry),
@@ -52,14 +64,14 @@ async def async_setup_entry(hass, entry):
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
 
     # Register snapshot service once
-    if not hass.services.has_service(DOMAIN, "snapshot"):
+    if not hass.services.has_service(DOMAIN, SERVICE_SNAPSHOT):
 
         async def snapshot_service_wrapper(call):
             await snapshot_service(hass, call)
 
         hass.services.async_register(
             DOMAIN,
-            "snapshot",
+            SERVICE_SNAPSHOT,
             snapshot_service_wrapper,
             schema=vol.Schema(
                 {
@@ -70,9 +82,26 @@ async def async_setup_entry(hass, entry):
                     vol.Optional(CONF_DUPLEX): str,
                     vol.Optional(CONF_OUTPUT_FORMAT): str,
                     vol.Optional(CONF_OCR): bool,
+                    vol.Optional(CONF_BRIGHTNESS): vol.Coerce(int),
+                    vol.Optional(CONF_CONTRAST): vol.Coerce(int),
+                    vol.Optional(CONF_DESKEW): bool,
+                    vol.Optional(CONF_ROTATION): str,
                 },
                 extra=vol.ALLOW_EXTRA,
             ),
+        )
+
+    # Register cancel-scan service once
+    if not hass.services.has_service(DOMAIN, SERVICE_CANCEL_SCAN):
+
+        async def cancel_service_wrapper(call):
+            await cancel_service(hass, call)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CANCEL_SCAN,
+            cancel_service_wrapper,
+            schema=vol.Schema({vol.Required("ip"): str}),
         )
 
     return True
@@ -87,6 +116,10 @@ def _entry_options(entry) -> dict:
         CONF_DUPLEX: opts.get(CONF_DUPLEX, DEFAULT_DUPLEX),
         CONF_OUTPUT_FORMAT: opts.get(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
         CONF_OCR: bool(opts.get(CONF_OCR, DEFAULT_OCR)),
+        CONF_BRIGHTNESS: int(opts.get(CONF_BRIGHTNESS, DEFAULT_BRIGHTNESS)),
+        CONF_CONTRAST: int(opts.get(CONF_CONTRAST, DEFAULT_CONTRAST)),
+        CONF_DESKEW: bool(opts.get(CONF_DESKEW, DEFAULT_DESKEW)),
+        CONF_ROTATION: opts.get(CONF_ROTATION, DEFAULT_ROTATION),
     }
 
 
@@ -134,6 +167,10 @@ async def snapshot_service(hass, call):
         CONF_DUPLEX,
         CONF_OUTPUT_FORMAT,
         CONF_OCR,
+        CONF_BRIGHTNESS,
+        CONF_CONTRAST,
+        CONF_DESKEW,
+        CONF_ROTATION,
     ):
         if key in call.data:
             options[key] = call.data[key]
@@ -144,13 +181,30 @@ async def snapshot_service(hass, call):
 
     async with lock:
         try:
-            images = await scan_jpeg(
-                ip,
-                max_pages=MAX_PAGES,
-                color_mode=options[CONF_COLOR_MODE],
-                resolution=options[CONF_RESOLUTION],
-                duplex=options[CONF_DUPLEX],
-            )
+            # Expose the created job (if any) so cancel_scan can abort it
+            current_job = {"jobid": None, "jobtoken": None}
+
+            def _on_job_start(jobid, jobtoken):
+                current_job["jobid"] = jobid
+                current_job["jobtoken"] = jobtoken
+                device_data["current_job"] = current_job
+
+            try:
+                images = await scan_jpeg(
+                    ip,
+                    max_pages=MAX_PAGES,
+                    color_mode=options[CONF_COLOR_MODE],
+                    resolution=options[CONF_RESOLUTION],
+                    duplex=options[CONF_DUPLEX],
+                    brightness=options[CONF_BRIGHTNESS],
+                    contrast=options[CONF_CONTRAST],
+                    deskew=options[CONF_DESKEW],
+                    rotation=options[CONF_ROTATION],
+                    on_job_start=_on_job_start,
+                )
+            finally:
+                # The scan is no longer active; clear the cancel target.
+                device_data["current_job"] = None
 
             saved_paths = await _save_scan(
                 hass, ip, entry_id, images, filename, options
@@ -164,10 +218,7 @@ async def snapshot_service(hass, call):
             await save_diagnostics(hass, entry_id, diag)
 
             # Save last snapshot path (first/last page for camera) to storage
-            store = storage.Store(
-                hass, STORAGE_VERSION, STORAGE_KEY_TEMPLATE.format(entry_id=entry_id)
-            )
-            await store.async_save({"last_snapshot": saved_paths[-1]})
+            await save_last_snapshot(hass, entry_id, saved_paths[-1])
 
             hass.bus.async_fire(
                 f"{DOMAIN}_snapshot_saved",
@@ -190,6 +241,24 @@ async def snapshot_service(hass, call):
                 exc_info=True,
             )
             raise HomeAssistantError(f"Unexpected error: {e}") from e
+
+
+async def cancel_service(hass, call):
+    """Cancel the currently running scan job for a device."""
+    ip = call.data["ip"]
+    device_data = next((d for d in hass.data[DOMAIN].values() if d["ip"] == ip), None)
+    if not device_data:
+        raise HomeAssistantError(f"Device {ip} not found")
+
+    current_job = device_data.get("current_job")
+    if not current_job or not current_job.get("jobid"):
+        _LOGGER.info("No active scan job for %s to cancel", ip)
+        return
+
+    await cancel_scan_job(
+        ip, current_job["jobid"], current_job.get("jobtoken", "")
+    )
+    _LOGGER.info("Cancelled scan job %s for %s", current_job["jobid"], ip)
 
 
 async def _save_scan(hass, ip, entry_id, images, filename, options) -> list:

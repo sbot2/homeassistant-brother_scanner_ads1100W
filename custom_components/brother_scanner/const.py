@@ -23,7 +23,7 @@ CONF_OUTPUT_FORMAT = "output_format"
 CONF_OCR = "ocr"
 
 # Allowed values
-COLOR_MODES = ["RGB24", "Gray8", "BlackAndWhite1"]
+COLOR_MODES = ["RGB24", "RGB48", "Gray8", "Gray16", "BlackAndWhite1"]
 # Resolution in DPI (hundreds of a mm would differ; WSD xResolution is in DPI)
 RESOLUTIONS = [100, 200, 300, 400, 600]
 OUTPUT_FORMATS = ["jpeg", "pdf"]
@@ -37,6 +37,29 @@ DEFAULT_OCR = False
 
 # Tesseract executable (used when OCR is enabled)
 TESSERACT_CMD = "tesseract"
+
+# Scan services
+SERVICE_SNAPSHOT = "snapshot"
+SERVICE_CANCEL_SCAN = "cancel_scan"
+
+# Image-processing scan option keys (stored per config entry under entry.options)
+CONF_BRIGHTNESS = "brightness"
+CONF_CONTRAST = "contrast"
+CONF_DESKEW = "deskew"
+CONF_ROTATION = "rotation"
+
+# Allowed values
+# WSD image-adjustment settings (ranges differ per vendor; we use -50..50)
+BRIGHTNESS_RANGE = range(-50, 51)
+CONTRAST_RANGE = range(-50, 51)
+# WSD Rotation element values
+ROTATIONS = ["None", "Rotate90", "Rotate180", "Rotate270"]
+
+# Defaults
+DEFAULT_BRIGHTNESS = 0
+DEFAULT_CONTRAST = 0
+DEFAULT_DESKEW = False
+DEFAULT_ROTATION = "None"
 
 # Max number of pages to retrieve in a single scan
 MAX_PAGES = 10

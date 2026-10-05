@@ -8,6 +8,7 @@ from homeassistant.components.camera import Camera
 from homeassistant.helpers import storage
 from .device import get_device_info
 from .const import DOMAIN, STORAGE_VERSION, STORAGE_KEY_TEMPLATE
+from .diagnostics import save_last_snapshot
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -123,11 +124,6 @@ class BrotherScannerLastSnapshot(Camera):
         self.async_write_ha_state()
 
         # Save the last snapshot path to storage
-        store = storage.Store(
-            self._hass,
-            STORAGE_VERSION,
-            STORAGE_KEY_TEMPLATE.format(entry_id=self._entry_id),
-        )
-        await store.async_save({"last_snapshot": self._file_path})
+        await save_last_snapshot(self._hass, self._entry_id, self._file_path)
 
         self.async_write_ha_state()

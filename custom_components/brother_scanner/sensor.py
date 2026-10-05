@@ -97,6 +97,9 @@ class BrotherScannerStateReasonSensor(BaseBrotherEntity, SensorEntity):
         if not self.coordinator.data:
             return STATE_UNKNOWN
         return self.coordinator.data.get("state_reason")
+
+
+class BrotherScannerAdfSensor(BaseBrotherEntity, SensorEntity):
     """Automatic document feeder state (paper present, feeder open, ...)."""
 
     def __init__(self, coordinator, entry):

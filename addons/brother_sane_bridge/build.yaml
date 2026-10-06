@@ -1,0 +1,17 @@
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base:latest
+  aarch64: ghcr.io/home-assistant/aarch64-base:latest
+  armv7: ghcr.io/home-assistant/armv7-base:latest
+  armhf: ghcr.io/home-assistant/armhf-base:latest
+args:
+  BUILD_VERSION: "1.0.0"
+  BUILD_ARCH: "{{ build_arch }}"
+labels:
+  io.hass.version: "1.0.0"
+  io.hass.type: addon
+  io.hass.arch: "{{ build_arch }}"
+  org.opencontainers.image.title: "Brother Scanner SANE Bridge"
+  org.opencontainers.image.description: "Scan bridge to a remote saned/brscan4 backend for duplex scanning."
+  org.opencontainers.image.version: "1.0.0"
+  org.opencontainers.image.authors: "Brother ADS-1100W integration maintainers"
+

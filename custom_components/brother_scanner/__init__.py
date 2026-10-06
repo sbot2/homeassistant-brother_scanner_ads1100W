@@ -7,6 +7,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import (
     DOMAIN,
     SCANS_DIR,
+    MODEL,
     CONF_COLOR_MODE,
     CONF_RESOLUTION,
     CONF_DUPLEX,
@@ -17,6 +18,10 @@ from .const import (
     CONF_DESKEW,
     CONF_ROTATION,
     TESSERACT_CMD,
+    COLOR_MODES,
+    RESOLUTIONS,
+    DUPLEX_VALUES,
+    ROTATIONS,
     DEFAULT_COLOR_MODE,
     DEFAULT_RESOLUTION,
     DEFAULT_DUPLEX,
@@ -29,8 +34,11 @@ from .const import (
     MAX_PAGES,
     SERVICE_SNAPSHOT,
     SERVICE_CANCEL_SCAN,
+    CONF_SANE_BRIDGE,
+    DEFAULT_SANE_BRIDGE_URL,
 )
-from .api import scan_jpeg, cancel_scan_job
+from .api import scan_jpeg, cancel_scan_job, get_scanner_capabilities
+from . import sane_backend
 from .diagnostics import (
     load_diagnostics,
     save_diagnostics,
@@ -45,14 +53,80 @@ async def async_setup_entry(hass, entry):
     ip = entry.data["ip"]
     entry_id = entry.entry_id
 
-    # Store IP and per-device lock
+    # Probe the device's advertised capabilities (description + configuration).
+    # Never fatal: if the probe fails we fall back to the module defaults.
+    try:
+        capabilities = await get_scanner_capabilities(ip)
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.warning(
+            "Could not read scanner capabilities from %s: %s. "
+            "Using default option lists.",
+            ip,
+            e,
+        )
+        capabilities = {}
+
+    # Detect the SANE backend (the only path that supports duplex on this
+    # ADS-1100W, whose WSD service reports ADFSupportsDuplex=0 and which exposes
+    # no eSCL/AirScan endpoint). Two transports are supported:
+    #
+    #  * "bridge"  - a Brother SANE bridge add-on on another container, reached
+    #                over HTTP at its slug hostname. This is the preferred path
+    #                on immutable HAOS (no local scanimage / driver needed).
+    #  * "local"   - the system `scanimage` CLI + a locally-available brscan4.
+    #
+    # Both are optional: when neither is available the integration continues to
+    # use the WSD path unchanged.
+    bridge_url = str(
+        (entry.options or {}).get(CONF_SANE_BRIDGE, DEFAULT_SANE_BRIDGE_URL)
+    )
+    bridge = await sane_backend.check_bridge(bridge_url)
+    if bridge["available"]:
+        sane_info = {
+            "available": True,
+            "mode": "bridge",
+            "bridge_url": bridge_url,
+            "device": bridge.get("device"),
+            "capabilities": {},
+            "reason": "",
+        }
+    else:
+        sane_info = await hass.async_add_executor_job(_detect_sane_backend)
+        sane_info["mode"] = "local"
+        sane_info["bridge_url"] = None
+
+    # When SANE is available, let its real option list (colour modes,
+    # resolutions, duplex) drive the pickers instead of the WSD report.
+    if sane_info["available"]:
+        sane_caps = sane_info["capabilities"] or {}
+        if sane_caps.get("color_modes"):
+            capabilities["color_modes"] = sane_caps["color_modes"]
+        if sane_caps.get("resolutions"):
+            capabilities["resolutions"] = sane_caps["resolutions"]
+        # Only flip duplex on if SANE actually reports it supported. The bridge
+        # exists specifically to enable duplex, so treat it as supported there.
+        if sane_info.get("mode") == "bridge":
+            sane_duplex = True
+        else:
+            sane_duplex = bool(sane_caps.get("duplex"))
+        if sane_duplex:
+            capabilities["duplex"] = ["None", "Duplex"]
+        # Record the effective SANE duplex capability for the options flow.
+        capabilities["sane_duplex"] = sane_duplex
+        capabilities["model"] = sane_caps.get("model") or capabilities.get("model", MODEL)
+
+
+    # Store IP and per-device lock + capabilities
     hass.data.setdefault(DOMAIN, {})[entry_id] = {
         "ip": ip,
         "lock": asyncio.Lock(),
         "current_job": None,
         "entities": [],
         "entry_id": entry_id,
-        "options": _entry_options(entry),
+        "capabilities": capabilities,
+        "sane": sane_info,
+        "model": capabilities.get("model", MODEL),
+        "options": _entry_options(entry, capabilities),
     }
 
     # Forward entities to HA
@@ -107,19 +181,48 @@ async def async_setup_entry(hass, entry):
     return True
 
 
-def _entry_options(entry) -> dict:
-    """Return effective scan options for an entry (options over defaults)."""
+def _entry_options(entry, capabilities: dict | None = None) -> dict:
+    """Return effective scan options for an entry (options over defaults).
+
+    Stored options are sanitised against the device's advertised capabilities so
+    that values configured before capability detection (e.g. a resolution the
+    device does not support) fall back to a supported value.
+    """
+    capabilities = capabilities or {}
     opts = entry.options or {}
+
+    color_modes = capabilities.get("color_modes") or COLOR_MODES
+    resolutions = capabilities.get("resolutions") or RESOLUTIONS
+    duplex_values = capabilities.get("duplex") or DUPLEX_VALUES
+    rotations = capabilities.get("rotations") or ROTATIONS
+
+    color_mode = opts.get(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
+    if color_mode not in color_modes:
+        color_mode = color_modes[0] if color_modes else DEFAULT_COLOR_MODE
+
+    resolution = int(opts.get(CONF_RESOLUTION, DEFAULT_RESOLUTION))
+    if resolution not in resolutions:
+        resolution = resolutions[0] if resolutions else DEFAULT_RESOLUTION
+
+    duplex = opts.get(CONF_DUPLEX, DEFAULT_DUPLEX)
+    if duplex not in duplex_values:
+        duplex = duplex_values[0] if duplex_values else DEFAULT_DUPLEX
+
+    rotation = opts.get(CONF_ROTATION, DEFAULT_ROTATION)
+    if rotation not in rotations:
+        rotation = rotations[0] if rotations else DEFAULT_ROTATION
+
     return {
-        CONF_COLOR_MODE: opts.get(CONF_COLOR_MODE, DEFAULT_COLOR_MODE),
-        CONF_RESOLUTION: int(opts.get(CONF_RESOLUTION, DEFAULT_RESOLUTION)),
-        CONF_DUPLEX: opts.get(CONF_DUPLEX, DEFAULT_DUPLEX),
+        CONF_COLOR_MODE: color_mode,
+        CONF_RESOLUTION: resolution,
+        CONF_DUPLEX: duplex,
         CONF_OUTPUT_FORMAT: opts.get(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
         CONF_OCR: bool(opts.get(CONF_OCR, DEFAULT_OCR)),
         CONF_BRIGHTNESS: int(opts.get(CONF_BRIGHTNESS, DEFAULT_BRIGHTNESS)),
         CONF_CONTRAST: int(opts.get(CONF_CONTRAST, DEFAULT_CONTRAST)),
         CONF_DESKEW: bool(opts.get(CONF_DESKEW, DEFAULT_DESKEW)),
-        CONF_ROTATION: opts.get(CONF_ROTATION, DEFAULT_ROTATION),
+        CONF_ROTATION: rotation,
+        CONF_SANE_BRIDGE: str(opts.get(CONF_SANE_BRIDGE, DEFAULT_SANE_BRIDGE_URL)),
     }
 
 
@@ -130,7 +233,8 @@ async def _refresh_options(hass, entry_id):
         for e in hass.config_entries.async_entries(DOMAIN)
         if e.entry_id == entry_id
     )
-    hass.data[DOMAIN][entry_id]["options"] = _entry_options(entry)
+    capabilities = hass.data[DOMAIN][entry_id].get("capabilities") or {}
+    hass.data[DOMAIN][entry_id]["options"] = _entry_options(entry, capabilities)
     # Re-create diagnosed entities data remains in place; coordinator picks it up.
 
 
@@ -146,6 +250,102 @@ async def async_unload_entry(hass, entry):
 async def _async_reload_entry(hass, entry):
     """Reload the config entry after options change."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _detect_sane_backend() -> dict:
+    """Return the SANE backend availability blob.
+
+    Runs in an executor thread (it blocks on subprocess calls). Safe even when
+    `scanimage` is absent: returns {"available": False, ...}.
+    """
+    try:
+        devices = sane_backend.list_brother_devices()
+        if not devices:
+            return {
+                "available": False,
+                "device": None,
+                "capabilities": {},
+                "reason": "no brother saned device found",
+            }
+        device = devices[0]["device"]
+        caps = sane_backend.probe_capabilities(device)
+        return {
+            "available": True,
+            "device": device,
+            "capabilities": caps,
+            "reason": "",
+        }
+    except Exception as e:  # noqa: BLE001
+        _LOGGER.debug("SANE backend detection failed: %s", e)
+        return {
+            "available": False,
+            "device": None,
+            "capabilities": {},
+            "reason": str(e),
+        }
+
+
+async def _sane_scan(
+    sane_info: dict,
+    *,
+    color_mode: str = "RGB24",
+    resolution: int = 200,
+    duplex: bool = False,
+    max_pages: int = 10,
+) -> list[bytes]:
+    """Acquire pages via SANE; return JPEG byte blobs.
+
+    ``sane_info`` is the stored SANE backend blob (mode + device + capabilities).
+    Two transports are supported:
+
+    * ``bridge`` - POST to the Brother SANE bridge over HTTP. The bridge derives
+      the ``ADF Duplex`` / ``ADF Front`` source from ``duplex`` for us.
+    * ``local``  - run ``scanimage`` in an executor thread. The ADF source is
+      chosen to match duplex here: the brother4 backend exposes explicit
+      ``ADF Front`` / ``ADF Duplex`` sources, so we select the one that matches
+      the requested mode instead of relying on ``--duplex`` alone.
+    """
+    if sane_info.get("mode") == "bridge":
+        bridge_url = sane_info.get("bridge_url")
+        if not bridge_url:
+            raise RuntimeError("SANE bridge configured but bridge URL is missing")
+        return await sane_backend.async_scan_via_http(
+            bridge_url,
+            color_mode=color_mode,
+            resolution=resolution,
+            duplex=duplex,
+            max_pages=max_pages,
+        )
+
+    device = sane_info["device"]
+    caps = sane_info.get("capabilities") or {}
+    sources = caps.get("sources") or []
+    source = caps.get("source") or "ADF"
+
+    if duplex:
+        dup_src = next((s for s in sources if "adf" in s.lower() and "duplex" in s.lower()), None)
+        if dup_src:
+            source = dup_src
+    else:
+        front_src = next(
+            (s for s in sources if "adf" in s.lower() and "duplex" not in s.lower()),
+            None,
+        )
+        if front_src:
+            source = front_src
+
+    return await asyncio.get_running_loop().run_in_executor(
+        None,
+        lambda: sane_backend.scan(
+            device,
+            source=source,
+            color_mode=color_mode,
+            resolution=resolution,
+            duplex=duplex,
+            max_pages=max_pages,
+        ),
+    )
+
 
 
 async def snapshot_service(hass, call):
@@ -190,18 +390,36 @@ async def snapshot_service(hass, call):
                 device_data["current_job"] = current_job
 
             try:
-                images = await scan_jpeg(
-                    ip,
-                    max_pages=MAX_PAGES,
-                    color_mode=options[CONF_COLOR_MODE],
-                    resolution=options[CONF_RESOLUTION],
-                    duplex=options[CONF_DUPLEX],
-                    brightness=options[CONF_BRIGHTNESS],
-                    contrast=options[CONF_CONTRAST],
-                    deskew=options[CONF_DESKEW],
-                    rotation=options[CONF_ROTATION],
-                    on_job_start=_on_job_start,
-                )
+                sane_info = device_data.get("sane") or {}
+                if sane_info.get("available") and sane_info.get("device"):
+                    # Use the SANE/brscan4 backend: the only path that
+                    # supports duplex on this device. duplex is boolean here.
+                    duplex_on = options[CONF_DUPLEX] == "Duplex"
+                    images = await _sane_scan(
+                        sane_info,
+                        color_mode=options[CONF_COLOR_MODE],
+                        resolution=options[CONF_RESOLUTION],
+                        duplex=duplex_on,
+                        max_pages=MAX_PAGES,
+                    )
+                    _LOGGER.info(
+                        "Scanned %d page(s) via SANE backend (%s)",
+                        len(images),
+                        sane_info["device"],
+                    )
+                else:
+                    images = await scan_jpeg(
+                        ip,
+                        max_pages=MAX_PAGES,
+                        color_mode=options[CONF_COLOR_MODE],
+                        resolution=options[CONF_RESOLUTION],
+                        duplex=options[CONF_DUPLEX],
+                        brightness=options[CONF_BRIGHTNESS],
+                        contrast=options[CONF_CONTRAST],
+                        deskew=options[CONF_DESKEW],
+                        rotation=options[CONF_ROTATION],
+                        on_job_start=_on_job_start,
+                    )
             finally:
                 # The scan is no longer active; clear the cancel target.
                 device_data["current_job"] = None

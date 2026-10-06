@@ -18,29 +18,29 @@
         text:
     color_mode:
       name: Color Mode
-      description: Color mode for the scan (RGB24, Gray8 or BlackAndWhite1). Overrides the device default.
+      description: Color mode for the scan (RGB24, Grayscale8 or BlackAndWhite1). Overrides the device default.
       required: false
       example: "RGB24"
       selector:
         select:
           options:
             - RGB24
-            - Gray8
+            - Grayscale8
             - BlackAndWhite1
     resolution:
       name: Resolution
-      description: Scan resolution in DPI (100, 200, 300, 400 or 600). Overrides the device default.
+      description: Scan resolution in DPI (100, 200 or 300). Overrides the device default.
       required: false
       example: 300
       selector:
         number:
           min: 100
-          max: 600
+          max: 300
           step: 100
           unit_of_measurement: dpi
     duplex:
       name: Duplex
-      description: Duplex mode (None or Duplex). Overrides the device default.
+      description: Duplex mode (None or Duplex). Duplex is only available when the SANE/brscan4 backend is installed on the HA host (the device's WSD service does not advertise duplex). Otherwise only None is supported. Overrides the device default.
       required: false
       example: "None"
       selector:
@@ -94,16 +94,13 @@
         boolean:
     rotation:
       name: Rotation
-      description: Rotate the scanned page (None, Rotate90, Rotate180 or Rotate270). Overrides the device default.
+      description: Rotate the scanned page. The ADS-1100W does not support on-device rotation, so only None is available.
       required: false
-      example: "Rotate90"
+      example: "None"
       selector:
         select:
           options:
             - None
-            - Rotate90
-            - Rotate180
-            - Rotate270
 
 cancel_scan:
   name: Cancel Scan

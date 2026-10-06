@@ -1,8 +1,14 @@
-﻿# Brother ADS-1100ADW Scanner Integration
+# Brother ADS-1100W Scanner Integration
 
-Custom Home Assistant integration to interface with the Brother ADS-1100ADW
+Custom Home Assistant integration to interface with the Brother ADS-1100W
 via the WSD (Web Services for Devices) scan protocol. Supports multi-page
 scanning from the automatic document feeder (ADF).
+
+When a SANE/`brscan4` backend is available on the Home Assistant host, the
+integration automatically uses it instead for acquisition, which enables
+**duplex** (double-sided) scanning and more accurate colour/resolution options —
+the device's WSD service itself does not advertise duplex. Otherwise it falls
+back to WSD transparently.
 
 ## Features
 
@@ -35,7 +41,7 @@ a single `<name>.pdf` is produced; JPEG output produces one file per page.
    with category **Integration**.
 3. Install the integration.
 4. Restart Home Assistant.
-5. Add the integration via the Home Assistant UI (search for **Brother ADS-1100ADW**).
+5. Add the integration via the Home Assistant UI (search for **Brother ADS-1100W**).
 
 ## Configuration
 
@@ -49,11 +55,17 @@ Zeroconf. If the device is not found automatically, you can enter the scanner's
 ## Options
 
 After setup you can adjust the scan settings per device via
-**Settings → Devices & Services → Brother ADS-1100ADW → Options**:
+**Settings → Devices & Services → Brother ADS-1100W → Options**:
 
-- **Color mode** – `RGB24` (color), `Gray8` (grayscale) or `BlackAndWhite1`.
-- **Resolution** – 100, 200, 300, 400 or 600 dpi.
-- **Duplex mode** – `None` (single-sided) or `Duplex`.
+The available **color mode**, **resolution**, **duplex** and **rotation** options
+are read from the device's advertised capabilities at setup, so only values the
+scanner actually supports are shown. For the ADS-1100W this is:
+
+- **Color mode** – `RGB24` (color), `Grayscale8` (grayscale) or `BlackAndWhite1`.
+- **Resolution** – 100, 200 or 300 dpi.
+- **Duplex mode** – `Duplex` is available only when the SANE/`brscan4` backend is
+  installed (see below); otherwise only `None` (single-sided) is offered, because
+  the device's WSD scan service reports `ADFSupportsDuplex=0`.
 - **Output format** – `jpeg` (one file per page) or `pdf` (single PDF).
 - **OCR** – enable to run OCR on scanned pages (requires Tesseract installed on
   the Home Assistant host).
@@ -82,9 +94,9 @@ are optional; settings that are not provided use the device's stored options.
 |-----------------|----------|----------------------------------------------------------------------------|
 | `ip`            | Yes      | The IP address or hostname of the scanner.                                 |
 | `filename`      | No       | Path to save the file. Relative paths are placed under `www`. Defaults to `www/scans/<ip>_<timestamp>.jpg`. |
-| `color_mode`    | No       | Override color mode (`RGB24`, `Gray8`, `BlackAndWhite1`).                  |
-| `resolution`    | No       | Override resolution in dpi (100–600).                                      |
-| `duplex`        | No       | Override duplex mode (`None` or `Duplex`).                                 |
+| `color_mode`    | No       | Override color mode (`RGB24`, `Grayscale8`, `BlackAndWhite1`).             |
+| `resolution`    | No       | Override resolution in dpi (100, 200 or 300).                              |
+| `duplex`        | No       | Override duplex mode (`None` or `Duplex`). Duplex requires the SANE/`brscan4` backend to be installed; otherwise only `None` works. |
 | `output_format` | No       | Override output (`jpeg` or `pdf`).                                         |
 | `ocr`           | No       | Override whether to run OCR.                                               |
 
@@ -107,6 +119,96 @@ via the service (defined in `const.py`):
 - Resolution: 200 dpi
 - Duplex: `None`
 - Media size: A4 (8500 × 11000 thousandths of an inch)
+
+## Duplex scanning (SANE / brscan4 backend)
+
+The Brother ADS-1100W **hardware** supports duplex (double-sided) scanning, and
+you can already use it via Brother's Linux drivers. The integration cannot reach
+that over the WSD scan path, however: the device's WSD Scan Service advertises
+`ADFSupportsDuplex=0`, and it exposes **no** eSCL/AirScan endpoint (no
+`_uscan._tcp` mDNS record). The only protocol that honours duplex is Brother's
+proprietary one, delivered through the SANE `brother4`/`brscan4` backend.
+
+To enable duplex, the SANE stack (`scanimage` + the Brother `brscan4` backend)
+must be reachable from wherever Home Assistant runs. Once the integration finds a
+Brother device via `scanimage -L` (checked automatically at setup) it switches
+acquisition to SANE and exposes the `Duplex` option plus the real
+colour/resolution list. When no Brother SANE device is detected, the integration
+keeps using WSD automatically.
+
+### Where to put the SANE stack depends on your installation
+
+- **Home Assistant on a normal Linux machine** (HA Core / Docker on Debian,
+  Ubuntu, etc.): install `sane-utils` + `brscan4` directly on that host.
+
+  ```bash
+  sudo apt install sane-utils
+  # Download the Brother brscan4 driver for ADS-1100W and install it, then
+  # register the network scanner, e.g.:
+  sudo dpkg -i brscan4-*-amd64.deb
+  sudo brsaneconfig4 -a name=ADS-1100W model=ADS-1100W ip=192.168.178.109
+  scanimage -L   # should list the ADS-1100W
+  ```
+
+- **Home Assistant OS (HAOS), including a HAOS VM:** HAOS is an *immutable*
+  operating system — you cannot `apt install` packages into it, and add-on
+  containers are ephemeral (anything installed at runtime is lost on restart
+  unless baked into the image). Do **not** try to install the driver inside the
+  VM. Instead, run `saned` on a *different* machine that already has the Brother
+  driver (e.g. your regular Linux desktop/server), and expose it to HA over
+  SANE's `net:` backend:
+
+  1. **On the host with working Brother scanning**, install + configure `saned`:
+     ```bash
+     sudo apt install sane-utils saned
+     # allow the HA machine/VM's address in /etc/saned/saned.conf
+     echo "192.168.178.0/24" | sudo tee -a /etc/sane.d/saned.conf
+     sudo systemctl enable --now saned
+     scanimage -L   # confirm this returns the ADS-1100W
+     ```
+  2. **Inside the HA add-on that runs the integration**, point SANE at the host
+     so `scanimage -L` shows a `net:host:...` device. If your HA add-on image
+     ships `sane-utils`, enable the backend (`#net` in `/etc/sane.d/dll.conf`)
+     or build a small custom add-on with `sane-utils` + the SANE `net` backend
+     baked into its image. The integration already parses `net:...` devices, so
+     no code change is required.
+
+  > TIP: the integration auto-selects the SANE path **only** when it sees a
+  > Brother device in `scanimage -L`; whatever host the add-on can reach with
+  > `scanimage -L` is what will be used.
+
+### Recommended HAOS route: the SANE bridge add-on
+
+Rather than baking `sane-utils` into a custom image for the integration's own
+container, the repo ships a ready-made **SANE bridge add-on** in
+[`addons/brother_sane_bridge/`](addons/brother_sane_bridge/). It runs in its own
+container, dials **out** to the host's `saned` over SANE `net:`, and exposes a
+tiny HTTP scan bridge (`GET /health`, `POST /scan`).
+
+The integration then calls the bridge over HTTP
+(`http://brother_sane_bridge:8661/scan`) instead of shelling out to a local
+`scanimage`:
+
+- At setup it probes the bridge's `/health`. If the add-on is running, it
+  switches to **bridge mode** and every scan is proxied through it — no local
+  `scanimage` or Brother driver is needed inside HA Core.
+- If the bridge is not reachable, it falls back to the local `scanimage` path,
+  then to WSD, exactly as before.
+
+To use it:
+
+1. Install the `brother_sane_bridge` add-on (add its folder as a local add-on).
+2. Configure its options: `saned_host` = IP of the machine running `saned`,
+   `saned_device` = the backend name that host reports (e.g.
+   `brother4:net1;dev0`).
+3. Start the add-on; check its log says `scanimage -L` sees the remote device.
+4. The integration detects the bridge automatically on its next setup/reload.
+   To point it at a *remote* host instead of the add-on slug, set the
+   `sane_bridge` option in the integration's options flow to e.g.
+   `http://192.168.178.50:8661`.
+
+See the add-on [`README`](addons/brother_sane_bridge/README.md) for full setup
+(host `saned` prerequisites, `saned.conf` allow-list, troubleshooting).
 
 ## Requirements
 

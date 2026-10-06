@@ -32,7 +32,12 @@ class BrotherScannerLastSnapshot(Camera):
         self._entry_id = entry.entry_id
         self._attr_name = "Last Snapshot"
         self._attr_unique_id = f"{self._entry_id}_last_snapshot"
-        self._attr_device_info = get_device_info(self._entry_id, self._ip)
+        model = None
+        if self._hass and self._hass.data.get(DOMAIN, {}).get(self._entry_id):
+            model = self._hass.data[DOMAIN][self._entry_id].get("model")
+        self._attr_device_info = get_device_info(
+            self._entry_id, self._ip, model
+        )
 
         # Path to last snapshot file
         self._file_path: str | None = None

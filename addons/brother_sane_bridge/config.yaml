@@ -1,0 +1,38 @@
+name: Brother Scanner SANE Bridge
+version: "1.0.0"
+slug: brother_sane_bridge
+description: >
+  Small scan bridge that lets the Brother ADS-1100W integration reach a Brother
+  scanner exposed by a remote `saned` over SANE's net backend. This is what
+  enables duplex scanning when Home Assistant runs in an immutable HAOS VM: the
+  Brother brscan4 driver stays on the Linux host (running saned), and this
+  add-on dials out to it via `scanimage -d net:<host>:<device>`.
+url: https://github.com/sbot2/homeassistant-brother_scanner_ads1100W
+arch:
+  - amd64
+  - aarch64
+  - armv7
+  - armhf
+startup: application
+init: false
+hassio_api: false
+host_network: false
+map:
+  - share:rw
+ports:
+  8661/tcp: 8661
+ports_description:
+  8661/tcp: Scan bridge HTTP API (used by the integration)
+options:
+  saned_host: 192.168.178.101
+  saned_device: "brother4:net1;dev0"
+  default_color_mode: "Color"
+  default_resolution: 200
+  port: 8661
+schema:
+  saned_host: str
+  saned_device: str
+  default_color_mode: str
+  default_resolution: "match(^[0-9]+$)"
+  port: "match(^[0-9]+$)"
+

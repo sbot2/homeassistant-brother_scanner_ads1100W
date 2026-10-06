@@ -259,6 +259,184 @@ def _extract(text: str, pattern: str) -> str:
     return m.group(1).strip() if m else "Unknown"
 
 
+def _extract_all(text: str, pattern: str) -> list[str]:
+    """Return all non-empty, deduplicated matches for a regex pattern."""
+    seen = []
+    for m in re.findall(pattern, text):
+        val = m.strip()
+        if val and val not in seen:
+            seen.append(val)
+    return seen
+
+
+# Maps the values a device advertises in <wscn:ADFColor> to the standard WSD
+# color-mode tokens used in <sca:ColorMode>. Some Brother devices report e.g.
+# "Grayscale8" while the plugin historically used "Gray8"; normalise so we
+# always send a value the scanner understands.
+COLOR_MODE_ALIASES = {
+    "Grayscale8": "Grayscale8",
+    "Gray8": "Grayscale8",
+    "GrayScale8": "Grayscale8",
+    "Grayscale16": "Grayscale16",
+    "Gray16": "Grayscale16",
+    "RGB24": "RGB24",
+    "RGB48": "RGB48",
+    "BlackAndWhite1": "BlackAndWhite1",
+}
+
+
+async def get_scanner_capabilities(ip: str) -> dict:
+    """Query the scanner's advertised capabilities (description + configuration).
+
+    Returns a dict with the color modes, resolutions, duplex support and max
+    document size the device actually advertises. Values are extracted safely and
+    fall back to the module defaults if the device does not expose them, so a
+    capability probe failure never breaks configuration.
+    """
+    from .const import (
+        MODEL,
+        COLOR_MODES,
+        RESOLUTIONS,
+        DUPLEX_VALUES,
+        DEFAULT_PAGE_WIDTH,
+        DEFAULT_PAGE_HEIGHT,
+    )
+
+    url = f"http://{ip}/WebServices/ScannerService"
+    # Build a request for the elements we care about (mirrors the known-good
+    # request but asks for description + configuration too).
+    desc_config_names = (
+        "ScannerStatus",
+        "ScannerElements",
+        "AutoDocumentFeederStatus",
+        "ScannerDescription",
+        "ScannerConfiguration",
+    )
+    options = "\n".join(
+        f'        <sca:Name>sca:{n}</sca:Name>' for n in desc_config_names
+    )
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+               xmlns:sca="http://schemas.microsoft.com/windows/2006/08/wdp/scan">
+  <soap:Header>
+    <wsa:To>{url}</wsa:To>
+    <wsa:Action>http://schemas.microsoft.com/windows/2006/08/wdp/scan/GetScannerElements</wsa:Action>
+    <wsa:MessageID>urn:uuid:{msgid}</wsa:MessageID>
+    <wsa:ReplyTo>
+      <wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+    </wsa:ReplyTo>
+    <wsa:From>
+      <wsa:Address>urn:uuid:{fromid}</wsa:Address>
+    </wsa:From>
+  </soap:Header>
+  <soap:Body>
+    <sca:GetScannerElementsRequest>
+      <sca:RequestedElements>
+{options}
+      </sca:RequestedElements>
+    </sca:GetScannerElementsRequest>
+  </soap:Body>
+</soap:Envelope>
+""".format(url=url, msgid=make_uuid(), fromid=make_uuid(), options=options)
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            resp_bytes = await async_soap_request(
+                session, url, xml, step="GetScannerElements(capabilities)"
+            )
+        except aiohttp.ClientResponseError:
+            # Fall back to the minimal status-only request; not fatal.
+            resp_bytes = await async_soap_request(
+                session, url, SCANNER_STATUS_ONLY_XML.format(
+                    url=url, msgid=make_uuid(), fromid=make_uuid()
+                ),
+                step="GetScannerElements(status)",
+            )
+    text = resp_bytes.decode("utf-8", errors="ignore")
+    _LOGGER.debug("Scanner capabilities response for %s:\n%s", ip, text)
+
+    # Model name from ScannerDescription (fallback to configured MODEL)
+    model_match = re.search(
+        r"<wscn:ScannerName[^>]*>(.*?)</wscn:ScannerName>", text, re.DOTALL
+    )
+    advertised_model = model_match.group(1).strip() if model_match else None
+
+    # Advertised colour modes (normalised to standard WSD tokens)
+    advertised_colors = _extract_all(text, r"<wscn:ColorEntry>(.*?)</wscn:ColorEntry>")
+    color_modes = [
+        COLOR_MODE_ALIASES.get(raw, raw) for raw in advertised_colors
+    ]
+    if not color_modes:
+        color_modes = list(COLOR_MODES)
+
+    # ADF resolutions (device reports widths and heights under <wscn:ADFResolutions>).
+    # The ScannerConfiguration also contains an <wscn:ADFOpticalResolution> with
+    # width/height, so we must scope the extraction to ADFResolutions only.
+    resolutions: list[int] = []
+    for block in re.findall(
+        r"<wscn:ADFResolutions>(.*?)</wscn:ADFResolutions>", text, re.DOTALL
+    ):
+        for w in re.findall(r"<wscn:Width>(\d+)</wscn:Width>", block):
+            val = int(w)
+            if val not in resolutions:
+                resolutions.append(val)
+    if not resolutions:
+        resolutions = list(RESOLUTIONS)
+
+    # Duplex support
+    duplex_supported = (
+        re.search(r"<wscn:ADFSupportsDuplex>(\d+)</wscn:ADFSupportsDuplex>", text)
+    )
+    if duplex_supported:
+        duplex_values = ["None", "Duplex"] if duplex_supported.group(1) == "1" else ["None"]
+    else:
+        duplex_values = list(DUPLEX_VALUES)
+
+    duplex_ok = "Duplex" in duplex_values
+
+    # Rotation support. The WSD RotationValue is expressed in degrees; a device
+    # that only reports 0 does not support rotating the scanned image.
+    rotation_values = _extract_all(text, r"<wscn:RotationValue>(\d+)</wscn:RotationValue>")
+    if rotation_values and rotation_values == ["0"]:
+        rotations = ["None"]
+    else:
+        rotations = ["None", "Rotate90", "Rotate180", "Rotate270"]
+
+    # Max document size (media size in thousandths of an inch)
+    max_width = int(m.group(1)) if (m := re.search(
+        r"<wscn:ADFMaximumSize>\s*<wscn:Width>(\d+)</wscn:Width>", text
+    )) else DEFAULT_PAGE_WIDTH
+    max_height = int(m.group(1)) if (m := re.search(
+        r"<wscn:ADFMaximumSize>.*?<wscn:Height>(\d+)</wscn:Height>", text, re.DOTALL
+    )) else DEFAULT_PAGE_HEIGHT
+
+    # Brightness/contrast capability (both reported as 1 on the ADS-1100W).
+    brightness_supported = (
+        re.search(r"<wscn:BrightnessSupported>(\d+)</wscn:BrightnessSupported>", text)
+    )
+    contrast_supported = (
+        re.search(r"<wscn:ContrastSupported>(\d+)</wscn:ContrastSupported>", text)
+    )
+
+    return {
+        "model": advertised_model or MODEL,
+        "color_modes": color_modes,
+        "resolutions": resolutions,
+        "duplex": duplex_values,
+        "duplex_supported": duplex_ok,
+        "rotations": rotations,
+        "brightness_supported": bool(
+            brightness_supported and brightness_supported.group(1) == "1"
+        ),
+        "contrast_supported": bool(
+            contrast_supported and contrast_supported.group(1) == "1"
+        ),
+        "max_width": max_width,
+        "max_height": max_height,
+    }
+
+
 async def check_online(ip: str, timeout: float = 2.0) -> bool:
     """Return True if the scanner responds on its WSD scan service port."""
     try:

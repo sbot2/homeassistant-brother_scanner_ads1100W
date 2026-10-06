@@ -2,11 +2,15 @@ from datetime import timedelta
 
 DOMAIN = "brother_scanner"
 MANUFACTURER = "Brother"
-MODEL = "ADS-1100ADW"
+MODEL = "ADS-1100W"
 STORAGE_VERSION = 1
 STORAGE_KEY_TEMPLATE = f"{DOMAIN}_{{entry_id}}"
 SCANS_DIR = "scans"
-# WSD scan settings for the ADS-1100ADW (ADF sheet-fed document scanner)
+# WSD scan settings for the ADS-1100W (ADF sheet-fed document scanner).
+#
+# The defaults below are only fallbacks: at setup the integration queries the
+# device's <ScannerConfiguration> and uses the values it actually advertises
+# (colour modes, resolutions, duplex, max size) to build the option pickers.
 DEFAULT_FORMAT = "exif"
 DEFAULT_INPUT_SOURCE = "ADF"
 DEFAULT_COLOR_MODE = "RGB24"
@@ -22,10 +26,19 @@ CONF_DUPLEX = "duplex"
 CONF_OUTPUT_FORMAT = "output_format"
 CONF_OCR = "ocr"
 
-# Allowed values
-COLOR_MODES = ["RGB24", "RGB48", "Gray8", "Gray16", "BlackAndWhite1"]
-# Resolution in DPI (hundreds of a mm would differ; WSD xResolution is in DPI)
-RESOLUTIONS = [100, 200, 300, 400, 600]
+# SANE bridge (optional) option keys under entry.options
+CONF_SANE_BRIDGE = "sane_bridge"
+
+# Default bridge base URL. `brother_sane_bridge` is the add-on slug, which is
+# reachable from HA Core at that hostname; port 8661 is the add-on's HTTP port.
+DEFAULT_SANE_BRIDGE_URL = "http://brother_sane_bridge:8661"
+
+# Allowed values (fallbacks used when the device capability probe is
+# unavailable; normally the device-reported list is used instead). Names follow
+# the standard WSD color-mode tokens the ADS-1100W advertises.
+COLOR_MODES = ["BlackAndWhite1", "Grayscale8", "RGB24"]
+# Resolution in DPI (WSD xResolution is in DPI)
+RESOLUTIONS = [100, 200, 300]
 OUTPUT_FORMATS = ["jpeg", "pdf"]
 DUPLEX_VALUES = ["None", "Duplex"]
 

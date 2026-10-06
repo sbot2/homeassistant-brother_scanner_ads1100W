@@ -34,6 +34,8 @@ from .const import (
     DEFAULT_CONTRAST,
     DEFAULT_DESKEW,
     DEFAULT_ROTATION,
+    CONF_SANE_BRIDGE,
+    DEFAULT_SANE_BRIDGE_URL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -106,7 +108,7 @@ async def find_brother_printer(hass, model_name: str, timeout: int = 10) -> str 
 
 
 class BrotherScannerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for Brother scanners (e.g. ADS-1100ADW)."""
+    """Config flow for Brother scanners (e.g. ADS-1100W)."""
 
     VERSION = 1
 
@@ -221,21 +223,37 @@ class BrotherScannerOptionsFlow(config_entries.OptionsFlow):
                 CONF_CONTRAST: user_input[CONF_CONTRAST],
                 CONF_DESKEW: user_input[CONF_DESKEW],
                 CONF_ROTATION: user_input[CONF_ROTATION],
+                CONF_SANE_BRIDGE: str(
+                    user_input.get(CONF_SANE_BRIDGE) or DEFAULT_SANE_BRIDGE_URL
+                ),
             }
             return self.async_create_entry(title="", data=new_options)
+
+        # Build the option pickers from the capabilities read at setup, falling
+        # back to the module defaults if the probe was unavailable.
+        caps = {}
+        if DOMAIN in self.hass.data and self._config_entry.entry_id in self.hass.data[DOMAIN]:
+            caps = self.hass.data[DOMAIN][self._config_entry.entry_id].get(
+                "capabilities"
+            ) or {}
+
+        color_modes = caps.get("color_modes") or COLOR_MODES
+        resolutions = caps.get("resolutions") or RESOLUTIONS
+        duplex_values = caps.get("duplex") or DUPLEX_VALUES
+        rotations = caps.get("rotations") or ROTATIONS
 
         opts = self._config_entry.options
         schema = vol.Schema(
             {
                 vol.Required(
                     CONF_COLOR_MODE, default=opts.get(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
-                ): vol.In(COLOR_MODES),
+                ): vol.In(color_modes),
                 vol.Required(
                     CONF_RESOLUTION, default=int(opts.get(CONF_RESOLUTION, DEFAULT_RESOLUTION))
-                ): vol.In(RESOLUTIONS),
+                ): vol.In(resolutions),
                 vol.Required(
                     CONF_DUPLEX, default=opts.get(CONF_DUPLEX, DEFAULT_DUPLEX)
-                ): vol.In(DUPLEX_VALUES),
+                ): vol.In(duplex_values),
                 vol.Required(
                     CONF_OUTPUT_FORMAT,
                     default=opts.get(CONF_OUTPUT_FORMAT, DEFAULT_OUTPUT_FORMAT),
@@ -254,7 +272,11 @@ class BrotherScannerOptionsFlow(config_entries.OptionsFlow):
                 ): bool,
                 vol.Required(
                     CONF_ROTATION, default=opts.get(CONF_ROTATION, DEFAULT_ROTATION)
-                ): vol.In(ROTATIONS),
+                ): vol.In(rotations),
+                vol.Optional(
+                    CONF_SANE_BRIDGE,
+                    default=opts.get(CONF_SANE_BRIDGE, DEFAULT_SANE_BRIDGE_URL),
+                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

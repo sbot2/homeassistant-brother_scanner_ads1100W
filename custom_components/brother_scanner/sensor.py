@@ -65,7 +65,11 @@ class BaseBrotherEntity(CoordinatorEntity):
         self._ip = coordinator.ip
         self._entry_id = entry.entry_id
         self._hostname = entry.data.get("hostname", self._ip)
-        self._attr_device_info = get_device_info(self._entry_id, self._ip)
+        # Resolve the dynamic model name (falls back to the const default).
+        model = None
+        if self.hass and self.hass.data.get(DOMAIN, {}).get(self._entry_id):
+            model = self.hass.data[DOMAIN][self._entry_id].get("model")
+        self._attr_device_info = get_device_info(self._entry_id, self._ip, model)
         self._attr_has_entity_name = True
 
 
